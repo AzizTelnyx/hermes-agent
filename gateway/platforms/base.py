@@ -2272,9 +2272,10 @@ class BasePlatformAdapter(ABC):
         interval: float = 2.0,
         metadata=None,
         stop_event: asyncio.Event | None = None,
+        max_duration: float | None = 600.0,
     ) -> None:
         """
-        Continuously send typing indicator until cancelled.
+        Continuously send typing indicator until cancelled or capped.
         
         Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
         to recover quickly after progress messages interrupt it.
@@ -2292,14 +2293,29 @@ class BasePlatformAdapter(ABC):
         the next tick fire a fresh send_typing on schedule — as long as
         one of them succeeds within the 5s platform-side window, the bubble
         stays visible across provider stalls / upstream API timeouts.
+
+        ``max_duration`` is a safety fuse for orphaned/stuck message-processing
+        tasks.  It caps typing refreshes only; it does not cancel the agent run.
         """
         # Bound each send_typing round-trip so the refresh cadence isn't
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        loop = asyncio.get_running_loop()
+        _max_deadline = None
+        if max_duration is not None and max_duration > 0:
+            _max_deadline = loop.time() + max_duration
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
+                    return
+                if _max_deadline is not None and loop.time() >= _max_deadline:
+                    logger.debug(
+                        "[%s] Typing indicator cap reached for chat %s after %.1fs",
+                        self.name,
+                        chat_id,
+                        max_duration,
+                    )
                     return
                 if chat_id not in self._typing_paused:
                     try:
@@ -2318,11 +2334,14 @@ class BasePlatformAdapter(ABC):
                             "[%s] send_typing error (non-fatal): %s",
                             self.name, typing_err,
                         )
-                if stop_event is None:
-                    await asyncio.sleep(interval)
-                    continue
-                loop = asyncio.get_running_loop()
                 deadline = loop.time() + interval
+                if _max_deadline is not None:
+                    deadline = min(deadline, _max_deadline)
+                if stop_event is None:
+                    remaining = deadline - loop.time()
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                    continue
                 while not stop_event.is_set():
                     remaining = deadline - loop.time()
                     if remaining <= 0:
@@ -3096,7 +3115,7 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
         except (TypeError, ValueError):

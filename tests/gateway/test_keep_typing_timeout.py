@@ -198,3 +198,35 @@ class TestKeepTypingTimeoutPerTick:
         assert calls == [], (
             f"send_typing was called on a paused chat: {calls}"
         )
+
+    @pytest.mark.asyncio
+    async def test_keep_typing_stops_after_max_duration_without_stop_event(self, monkeypatch):
+        """A stuck/orphaned processing task must not refresh typing forever.
+
+        The cap only stops the typing refresh loop; it does not cancel the
+        agent run. This prevents Telegram from showing a permanent typing
+        bubble if session cleanup fails or an upstream call wedges.
+        """
+        adapter = _StubAdapter()
+        calls = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            calls.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="capped-chat",
+                interval=0.05,
+                max_duration=0.16,
+            )
+        )
+
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert calls, "typing should run before the cap fires"
+        assert len(calls) <= 5, (
+            f"typing loop did not stop near the max_duration cap; calls={calls}"
+        )
