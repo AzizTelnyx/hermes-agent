@@ -201,7 +201,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     # MiniMax — official docs: 204,800 context for all models
     # https://platform.minimax.io/docs/api-reference/text-anthropic-api
     "minimax": 204800,
-    # GLM
+    # GLM (Zhipu AI / Z.ai) — https://docs.z.ai/guides/llm/glm-5.2
+    # GLM-5.x ships with 1M lossless context; GLM-4.x is 202K.
+    # Keys use longest-substring matching, so "glm-5" must come before "glm".
+    "glm-5": 1000000,
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to
