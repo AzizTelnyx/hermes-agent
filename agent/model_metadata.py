@@ -222,7 +222,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
     "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
-    # Kimi
+    # Kimi — K3 (2026-07-16) ships a 1M context window; K2.x was 256K.
+    # Longest-substring match: "kimi-k3" must precede the generic "kimi".
+    "kimi-k3": 1048576,
     "kimi": 262144,
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
     # OpenRouter live metadata reports 262144 (256 × 1024); align the

@@ -2348,6 +2348,43 @@ class GatewayRunner:
                 return None
         return None
 
+    _SESSION_MODEL_OVERRIDE_DEFAULT_TTL_MIN = 60
+
+    def _get_session_model_override(self, session_key: Optional[str]) -> Optional[dict]:
+        """Return the live /model session override for *session_key*, honoring TTL.
+
+        Overrides carry a ``set_at`` epoch written by /model.  An override
+        older than ``model.switch_ttl_minutes`` (default 60 min) is expired,
+        removed, and treated as absent so the session falls back to config
+        defaults.  Overrides written before this feature (no ``set_at``) are
+        treated as expired on first read.  Set ``switch_ttl_minutes: 0`` to
+        disable expiry (legacy behaviour).
+        """
+        if not session_key:
+            return None
+        override = self._session_model_overrides.get(session_key)
+        if not override:
+            return None
+        ttl_min = self._SESSION_MODEL_OVERRIDE_DEFAULT_TTL_MIN
+        try:
+            _cfg = getattr(self, "config", None)
+            if isinstance(_cfg, dict):
+                _val = (_cfg.get("model", {}) or {}).get("switch_ttl_minutes")
+                if _val is not None:
+                    ttl_min = float(_val)
+        except Exception:
+            pass
+        if ttl_min and ttl_min > 0:
+            set_at = override.get("set_at")
+            try:
+                age_ok = set_at is not None and (time.time() - float(set_at)) <= ttl_min * 60
+            except Exception:
+                age_ok = False
+            if not age_ok:
+                self._session_model_overrides.pop(session_key, None)
+                return None
+        return override
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -2369,7 +2406,7 @@ class GatewayRunner:
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
-        override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        override = self._get_session_model_override(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -8240,14 +8277,13 @@ class GatewayRunner:
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
         if getattr(session_entry, "was_auto_reset", False):
-            # Treat auto-reset as a full conversation boundary — drop every
-            # session-scoped transient state so the fresh session does not
-            # inherit the previous conversation's model/reasoning overrides
-            # or a queued "/model switched" note.
-            self._session_model_overrides.pop(session_key, None)
+            # Auto-reset wipes conversation state — but NOT the model choice.
+            # A /model switch is a user preference with its own TTL (default
+            # 60 min), not part of the wiped conversation: a switch made
+            # seconds before a stale-session reset must survive it.  The queued
+            # "model was just switched" note survives as well, so the fresh
+            # session starts on the switched model and self-identifies correctly.
             self._set_session_reasoning_override(session_key, None)
-            if hasattr(self, "_pending_model_notes"):
-                self._pending_model_notes.pop(session_key, None)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -9021,10 +9057,10 @@ class GatewayRunner:
                 )
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
-                self._session_model_overrides.pop(session_key, None)
+                # Keep the /model override and its switch note: compression
+                # exhaustion resets the conversation, not the user's model
+                # preference (governed by its own TTL).
                 self._set_session_reasoning_override(session_key, None)
-                if hasattr(self, "_pending_model_notes"):
-                    self._pending_model_notes.pop(session_key, None)
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -10272,7 +10308,7 @@ class GatewayRunner:
         # Check for session override
         source = event.source
         session_key = self._session_key_for_source(source)
-        override = self._session_model_overrides.get(session_key, {})
+        override = self._get_session_model_override(session_key) or {}
         if override:
             current_model = override.get("model", current_model)
             current_provider = override.get("provider", current_provider)
@@ -10362,6 +10398,7 @@ class GatewayRunner:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "set_at": time.time(),
                         }
 
                         # Evict cached agent so the next turn creates a fresh
@@ -10502,6 +10539,7 @@ class GatewayRunner:
             "api_key": result.api_key,
             "base_url": result.base_url,
             "api_mode": result.api_mode,
+            "set_at": time.time(),
         }
 
         # Evict cached agent so the next turn creates a fresh agent from the
@@ -15223,7 +15261,7 @@ class GatewayRunner:
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
-        override = self._session_model_overrides.get(session_key)
+        override = self._get_session_model_override(session_key)
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
@@ -15235,7 +15273,7 @@ class GatewayRunner:
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
-        override = self._session_model_overrides.get(session_key)
+        override = self._get_session_model_override(session_key)
         return override is not None and override.get("model") == agent_model
 
     def _release_running_agent_state(
