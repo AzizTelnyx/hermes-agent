@@ -62,8 +62,10 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
     cache_audio_from_url,
     cache_audio_from_bytes,
+    cache_video_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_VIDEO_TYPES,
 )
 from tools.url_safety import is_safe_url
 
@@ -4705,6 +4707,37 @@ class DiscordAdapter(BasePlatformAdapter):
                     print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
                     media_urls.append(att.url)
                     media_types.append(content_type)
+            elif content_type.startswith("video/"):
+                # Video attachments: cache to local disk so the agent can
+                # reference the path with video tools (ffmpeg frame
+                # extraction, transcription). Same per-attachment memory cap
+                # as documents.
+                ext = ""
+                if att.filename:
+                    _, ext = os.path.splitext(att.filename)
+                    ext = ext.lower()
+                if not ext or ext not in SUPPORTED_VIDEO_TYPES:
+                    ext = next(
+                        (k for k, v in SUPPORTED_VIDEO_TYPES.items() if v == content_type),
+                        ext or ".mp4",
+                    )
+                _vid_max_bytes = self._discord_max_attachment_bytes()
+                if _vid_max_bytes and att.size and att.size > _vid_max_bytes:
+                    logger.warning(
+                        "[Discord] Video too large (%s bytes > cap %s), skipping: %s",
+                        att.size, _vid_max_bytes, att.filename,
+                    )
+                else:
+                    try:
+                        raw_bytes = await self._cache_discord_document(att, ext)
+                        cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
+                        media_urls.append(cached_path)
+                        media_types.append(content_type)
+                        logger.info("[Discord] Cached user video: %s", cached_path)
+                    except Exception as e:
+                        logger.warning(
+                            "[Discord] Failed to cache video %s: %s", att.filename, e
+                        )
             else:
                 # Document attachments: download, cache, and optionally inject text
                 ext = ""

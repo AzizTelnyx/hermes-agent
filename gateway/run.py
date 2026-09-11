@@ -7991,6 +7991,7 @@ class GatewayRunner:
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
+        video_file_paths: list[str] = []
 
         if event.media_urls:
             image_paths = []
@@ -8008,6 +8009,14 @@ class GatewayRunner:
                     and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
                 ):
                     audio_paths.append(path)
+                if (
+                    mtype.startswith("video/")
+                    or (
+                        event.message_type == MessageType.VIDEO
+                        and not mtype.startswith(("image/", "audio/"))
+                    )
+                ):
+                    video_file_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
@@ -8081,6 +8090,19 @@ class GatewayRunner:
                     f"[The user sent an audio file attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
                     f"Ask the user what they'd like you to do with it, or pass the path to a transcription or media tool.]"
+                )
+                message_text = f"{_note}\n\n{message_text}"
+
+        if video_file_paths:
+            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
+            for _vpath in video_file_paths:
+                _display = re.sub(r'[^\w.\- ]', '_', os.path.basename(_vpath))
+                _agent_path = _to_agent_path(_vpath)
+                _note = (
+                    f"[The user sent a video file attachment: '{_display}'. "
+                    f"It is saved at: {_agent_path}. "
+                    f"You cannot watch video directly: use ffmpeg to extract key frames and/or "
+                    f"transcribe the audio track, then analyze the results.]"
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
