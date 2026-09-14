@@ -4591,7 +4591,18 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # A reply keeps its thread context only when the referenced message
+            # lives in a thread. Replying to a channel-level message carries no
+            # thread context, so thread it like a plain mention instead of
+            # continuing to clutter the parent channel.
+            is_reply_to_thread = False
+            if is_reply_message:
+                ref = getattr(message, "reference", None)
+                ref_channel_id = getattr(ref, "channel_id", None) if ref is not None else None
+                is_reply_to_thread = bool(
+                    ref_channel_id and str(ref_channel_id) != str(message.channel.id)
+                )
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_to_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
