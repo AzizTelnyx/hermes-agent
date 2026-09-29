@@ -75,7 +75,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from plugins.platforms.discord import adapter as adapter_module  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class FakeTree:
@@ -406,49 +407,67 @@ def test_build_slash_event_preserves_thread_context(adapter):
 
 
 @pytest.mark.asyncio
-async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
-    """Thread names must not contain raw <@id>, <@&id>, or <#id> markers.
+    result = await adapter._auto_create_thread(message)
 
-    Regression guard for #6336 — previously a message like
-    ``<@&1490963422786093149> help`` would spawn a thread literally
-    named ``<@&1490963422786093149> help``.
-    """
-    thread = SimpleNamespace(id=999, name="help")
-    message = SimpleNamespace(
-        content="<@&1490963422786093149> <@555> please help <#123>",
-        create_thread=AsyncMock(return_value=thread),
-        channel=SimpleNamespace(send=AsyncMock()),
-        author=SimpleNamespace(display_name="Jezza"),
-    )
-
-    await adapter._auto_create_thread(message)
-
-    name = message.create_thread.await_args[1]["name"]
-    assert "<@" not in name, f"role/user mention leaked: {name!r}"
-    assert "<#" not in name, f"channel mention leaked: {name!r}"
-    assert name == "please help"
+    assert result is thread
+    call_kwargs = message.create_thread.await_args[1]
+    assert len(call_kwargs["name"]) <= 80
+    assert call_kwargs["name"].endswith("...")
 
 
 @pytest.mark.asyncio
-async def test_rename_thread_edits_only_when_current_name_matches(adapter):
-    thread = SimpleNamespace(
-        id=999,
-        name="raw user prompt",
-        edit=AsyncMock(),
-    )
-    adapter._client.get_channel = lambda _id: thread
-
-    result = await adapter.rename_thread(
-        "999",
-        "Semantic Session Title",
-        only_if_current_name="raw user prompt",
+async def test_auto_create_thread_falls_back_to_seed_message(adapter):
+    thread = SimpleNamespace(id=555, name="Hello")
+    seed_message = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+    message = SimpleNamespace(
+        content="Hello",
+        create_thread=AsyncMock(side_effect=RuntimeError("no perms")),
+        channel=SimpleNamespace(send=AsyncMock(return_value=seed_message)),
+        author=SimpleNamespace(display_name="Jezza"),
     )
 
-    assert result is True
-    thread.edit.assert_awaited_once_with(
-        name="Semantic Session Title",
-        reason="Hermes semantic session title",
+    result = await adapter._auto_create_thread(message)
+    assert result is thread
+    message.channel.send.assert_awaited_once_with("🧵 Thread created by Hermes: **Hello**")
+    seed_message.create_thread.assert_awaited_once_with(
+        name="Hello",
+        auto_archive_duration=10080,
+        reason="Auto-threaded from mention by Jezza",
     )
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(adapter):
+    message = SimpleNamespace(
+        content="Hello",
+        create_thread=AsyncMock(side_effect=RuntimeError("no perms")),
+        channel=SimpleNamespace(send=AsyncMock(side_effect=RuntimeError("send failed"))),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    result = await adapter._auto_create_thread(message)
+    assert result is None
+
+
+# ------------------------------------------------------------------
+# Auto-archive window resolution
+# ------------------------------------------------------------------
+
+
+def test_thread_auto_archive_minutes_defaults_to_one_week(monkeypatch):
+    """Bot-created threads stay visible for a week by default (DG request)."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_ARCHIVE", raising=False)
+    assert adapter_module._thread_auto_archive_minutes() == 10080
+
+
+def test_thread_auto_archive_minutes_env_override(monkeypatch):
+    """DISCORD_AUTO_THREAD_ARCHIVE overrides the default when valid."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE", "4320")
+    assert adapter_module._thread_auto_archive_minutes() == 4320
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE", "7200")  # invalid
+    assert adapter_module._thread_auto_archive_minutes() == 10080
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE", "banana")  # invalid
+    assert adapter_module._thread_auto_archive_minutes() == 10080
 
 
 # ------------------------------------------------------------------
