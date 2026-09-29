@@ -75,6 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from plugins.platforms.discord import adapter as adapter_module  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -509,7 +510,7 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     message.create_thread.assert_awaited_once()
     call_kwargs = message.create_thread.await_args[1]
     assert call_kwargs["name"] == "Hello world, how are you?"
-    assert call_kwargs["auto_archive_duration"] == 1440
+    assert call_kwargs["auto_archive_duration"] == 10080
 
 
 @pytest.mark.asyncio
@@ -589,7 +590,7 @@ async def test_auto_create_thread_falls_back_to_seed_message(adapter):
     message.channel.send.assert_awaited_once_with("🧵 Thread created by Hermes: **Hello**")
     seed_message.create_thread.assert_awaited_once_with(
         name="Hello",
-        auto_archive_duration=1440,
+        auto_archive_duration=10080,
         reason="Auto-threaded from mention by Jezza",
     )
 
@@ -605,6 +606,27 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
 
     result = await adapter._auto_create_thread(message)
     assert result is None
+
+
+# ------------------------------------------------------------------
+# Auto-archive window resolution
+# ------------------------------------------------------------------
+
+
+def test_thread_auto_archive_minutes_defaults_to_one_week(monkeypatch):
+    """Bot-created threads stay visible for a week by default (DG request)."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_ARCHIVE", raising=False)
+    assert adapter_module._thread_auto_archive_minutes() == 10080
+
+
+def test_thread_auto_archive_minutes_env_override(monkeypatch):
+    """DISCORD_AUTO_THREAD_ARCHIVE overrides the default when valid."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE", "4320")
+    assert adapter_module._thread_auto_archive_minutes() == 4320
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE", "7200")  # invalid
+    assert adapter_module._thread_auto_archive_minutes() == 10080
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE", "banana")  # invalid
+    assert adapter_module._thread_auto_archive_minutes() == 10080
 
 
 # ------------------------------------------------------------------
