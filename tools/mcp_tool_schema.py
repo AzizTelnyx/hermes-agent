@@ -132,8 +132,14 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     """
     if not schema:
         return dict(_EMPTY_OBJECT_SCHEMA)
-    from tools.schema_sanitizer import collapse_const_unions, strip_nullable_unions
-    normalized = _rewrite_local_refs(schema)
+    from tools.schema_sanitizer import collapse_const_unions, strip_nullable_unions, dereference_local_refs
+    # Inline local $ref pointers FIRST — vLLM-based backends (e.g. the Telnyx-hosted
+    # GLM-5.3-Flash deployment since 2026-10-07) return empty generations when a tool
+    # schema still contains a local reference. Dereference here AND in the global
+    # sanitize_tool_schemas request path so both ingestion and request schemas are
+    # self-contained.
+    normalized = dereference_local_refs(schema)
+    normalized = _rewrite_local_refs(normalized)
     normalized = strip_nullable_unions(normalized, keep_nullable_hint=True)
     normalized = collapse_const_unions(normalized)
     normalized = _repair_object_shape(normalized, _object_root=True)

@@ -630,3 +630,106 @@ def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
                 if isinstance(val, int) and val >= 2000:
                     offenders.append((name, key, val))
     assert not offenders, offenders
+
+# ---------------------------------------------------------------------------
+# dereference_local_refs — local $ref pointers must be inlined because
+# vLLM-based tool-call parsers (Telnyx-hosted GLM-5.3-Flash since
+# 2026-10-07) return empty generations when a schema still contains them.
+# ---------------------------------------------------------------------------
+
+from tools.schema_sanitizer import dereference_local_refs  # noqa: E402
+
+
+def test_dereference_inlines_defs_refs():
+    schema = {
+        "type": "object",
+        "$defs": {"Id": {"type": "string", "pattern": "^[a-f0-9]{24}$"}},
+        "properties": {"id": {"$ref": "#/$defs/Id"}},
+    }
+    out = dereference_local_refs(schema)
+    assert "$ref" not in str(out)
+    assert out["properties"]["id"] == {"type": "string", "pattern": "^[a-f0-9]{24}$"}
+
+
+def test_dereference_hockeystack_style_properties_pointer():
+    schema = {
+        "type": "object",
+        "properties": {
+            "savedFilters": {
+                "type": "object",
+                "properties": {
+                    "dateRange": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"anyOf": [{"type": "string"}, {"type": "number"}]},
+                            "to": {"$ref": "#/properties/savedFilters/properties/dateRange/properties/from"},
+                        },
+                    }
+                },
+            }
+        },
+    }
+    out = dereference_local_refs(schema)
+    assert "$ref" not in str(out)
+    assert out["properties"]["savedFilters"]["properties"]["dateRange"]["properties"]["to"] == {
+        "anyOf": [{"type": "string"}, {"type": "number"}]
+    }
+
+
+def test_dereference_pointer_with_array_index():
+    schema = {
+        "type": "object",
+        "anyOf": [{"type": "string"}, {"type": "number"}],
+        "properties": {"value": {"$ref": "#/anyOf/0"}},
+    }
+    out = dereference_local_refs(schema)
+    assert out["properties"]["value"] == {"type": "string"}
+
+
+def test_dereference_circular_refs_collapse():
+    schema = {"type": "object", "properties": {"a": {"$ref": "#/properties/a"}}}
+    out = dereference_local_refs(schema)
+    assert out["properties"]["a"] == {}
+
+
+def test_dereference_missing_target_collapses():
+    schema = {"type": "object", "properties": {"a": {"$ref": "#/properties/does/not/exist"}}}
+    out = dereference_local_refs(schema)
+    assert out["properties"]["a"] == {}
+
+
+def test_dereference_leaves_remote_refs():
+    schema = {"type": "object", "properties": {"a": {"$ref": "https://example.com/schema.json"}}}
+    out = dereference_local_refs(schema)
+    assert out["properties"]["a"] == {"$ref": "https://example.com/schema.json"}
+
+
+def test_dereference_nested_chain():
+    schema = {
+        "type": "object",
+        "$defs": {"Inner": {"$ref": "#/$defs/Outer"}},
+        "properties": {"a": {"$ref": "#/$defs/Inner"}},
+    }
+    schema["$defs"]["Outer"] = {"type": "string"}
+    out = dereference_local_refs(schema)
+    assert out["properties"]["a"] == {"type": "string"}
+
+
+def test_sanitize_tool_schemas_removes_all_local_refs():
+    tools = [_tool("create_dashboard", {
+        "type": "object",
+        "properties": {
+            "from": {"anyOf": [{"type": "string"}, {"type": "number"}]},
+            "to": {"$ref": "#/properties/from"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert "$ref" not in str(out)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["to"]["anyOf"] == [{"type": "string"}, {"type": "number"}]
+
+
+def test_sanitize_tool_schemas_derefs_dangling_ref_to_empty():
+    tools = [_tool("t", {"type": "object", "properties": {"a": {"$ref": "#/nope"}}})]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["properties"]["a"] == {}
