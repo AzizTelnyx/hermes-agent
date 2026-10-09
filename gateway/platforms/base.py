@@ -3097,6 +3097,29 @@ class BasePlatformAdapter(ABC):
         self._discard_text_debounce(session_key)
         return True
 
+    def _drain_orphan_pending_or_start(self, event: MessageEvent, session_key: str) -> None:
+        """Guard-release race backport (upstream fd70debb4a / c8533b178a).
+
+        The busy path queues the event into ``_pending_messages`` and returns,
+        trusting the session's active task to drain it when it finishes. If
+        that task completed while this handler was awaiting, the queue would
+        never be drained and the message is silently lost (observed live
+        2026-10-09: a Discord approval message dropped with zero trace between
+        the inbound log and agent dispatch). If the session is no longer
+        active, start the queued event (or this event) immediately instead.
+        """
+        if session_key in self._active_sessions:
+            return
+        orphan = self.get_pending_message(session_key)
+        if orphan is None:
+            orphan = event
+        logger.info(
+            "[%s] Session %s finished while follow-up was being queued — "
+            "starting orphaned event immediately (pending-drain race fix)",
+            self.name, session_key,
+        )
+        self._start_session_processing(orphan, session_key)
+
     def _start_session_processing(
         self,
         event: MessageEvent,
@@ -3417,9 +3440,11 @@ class BasePlatformAdapter(ABC):
             if self._busy_session_handler is not None:
                 try:
                     if await self._busy_session_handler(event, session_key):
+                        self._drain_orphan_pending_or_start(event, session_key)
                         return
                 except Exception as e:
                     logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+                    self._drain_orphan_pending_or_start(event, session_key)
 
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
@@ -3427,6 +3452,7 @@ class BasePlatformAdapter(ABC):
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
                 merge_pending_message_event(self._pending_messages, session_key, event)
+                self._drain_orphan_pending_or_start(event, session_key)
                 return  # Don't interrupt now - will run after current task completes
 
             if self._is_queue_text_debounce_candidate(event):
@@ -3451,6 +3477,7 @@ class BasePlatformAdapter(ABC):
                     event,
                     merge_text=event.message_type == MessageType.TEXT,
                 )
+                self._drain_orphan_pending_or_start(event, session_key)
             return  # Don't process now - will be handled after current task finishes
         
         # Mark session as active BEFORE spawning background task to close
