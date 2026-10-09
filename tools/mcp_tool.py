@@ -2844,6 +2844,20 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return {"type": "object", "properties": {}}
 
+    # Inline all local $ref pointers first. vLLM-based backends (e.g. the
+    # Telnyx-hosted GLM-5.3-Flash deployment since 2026-10-07) return empty
+    # generations when a tool schema still contains a local reference, and
+    # refs pointing into ``#/properties/...`` (HockeyStack-style) survive
+    # ``_rewrite_local_refs`` untouched. Deref here AND in the global
+    # ``sanitize_tool_schemas`` request path so both ingestion and request
+    # schemas are self-contained.
+    try:
+        from tools.schema_sanitizer import dereference_local_refs
+
+        schema = dereference_local_refs(schema)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("Schema $ref dereference skipped: %s", e)
+
     def _rewrite_local_refs(node):
         if isinstance(node, dict):
             normalized = {}

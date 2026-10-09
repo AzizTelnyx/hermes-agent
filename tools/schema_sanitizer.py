@@ -55,6 +55,77 @@ def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
     return sanitized
 
 
+def dereference_local_refs(schema: Any, *, max_depth: int = 64) -> Any:
+    """Inline all local JSON-Schema ``#/...`` references into deep copies.
+
+    Several OpenAI-compatible backends cannot handle schemas that contain
+    local ``$ref`` pointers. Most notably, vLLM-based tool-call parsing
+    layers (e.g. the Telnyx-hosted GLM-5.3-Flash deployment since
+    2026-10-07) silently return an *empty generation* — a stream whose only
+    chunk is ``{"delta": {}, "finish_reason": "stop"}`` — when any tool
+    schema in the request still contains a local reference. Inlining every
+    reference makes each schema self-contained, which every backend accepts.
+
+    Guards:
+
+    * Only local pointers (``#/...``) are resolved; absolute/remote refs are
+      left untouched.
+    * Cycle detection: a pointer chain that re-enters a reference currently
+      being resolved collapses to ``{}``.
+    * Missing/dangling targets collapse to ``{}``.
+    * Resolution depth is capped to prevent pathological expansion.
+    """
+    if not isinstance(schema, (dict, list)):
+        return schema
+
+    root = schema
+
+    def _pointer_lookup(pointer: str) -> Any | None:
+        if not pointer.startswith("#/"):
+            return None
+        node: Any = root
+        for raw in pointer[2:].split("/"):
+            token = raw.replace("~1", "/").replace("~0", "~")
+            if isinstance(node, list):
+                try:
+                    node = node[int(token)]
+                except (ValueError, IndexError):
+                    return None
+            elif isinstance(node, dict):
+                if token not in node:
+                    return None
+                node = node[token]
+            else:
+                return None
+        return node
+
+    def _resolve(node: Any, depth: int, active: frozenset) -> Any:
+        if depth > max_depth:
+            return {}
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/"):
+                if ref in active:
+                    return {}
+                target = _pointer_lookup(ref)
+                if target is None:
+                    return {}
+                try:
+                    target = copy.deepcopy(target)
+                except Exception:  # pragma: no cover — defensive
+                    return {}
+                return _resolve(target, depth + 1, active | {ref})
+            return {k: _resolve(v, depth + 1, active) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_resolve(v, depth + 1, active) for v in node]
+        return node
+
+    try:
+        return _resolve(schema, 0, frozenset())
+    except RecursionError:  # pragma: no cover — defensive
+        return schema
+
+
 def _sanitize_single_tool(tool: dict) -> dict:
     """Deep-copy and sanitize a single OpenAI-format tool entry."""
     out = copy.deepcopy(tool)
@@ -67,6 +138,11 @@ def _sanitize_single_tool(tool: dict) -> dict:
     if not isinstance(params, dict):
         fn["parameters"] = {"type": "object", "properties": {}}
         return out
+
+    # Inline all local $ref pointers FIRST: vLLM-based backends (e.g. the
+    # Telnyx-hosted GLM-5.3-Flash deployment since 2026-10-07) return empty
+    # generations when a tool schema still contains a local reference.
+    params = dereference_local_refs(params)
 
     fn["parameters"] = _sanitize_node(params, path=fn.get("name", "<tool>"))
     # After recursion, guarantee the top-level is an object with properties.
