@@ -3020,7 +3020,10 @@ def _seed_custom_pool(pool_key: str, entries: list[PooledCredential]) -> tuple[b
 
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
-        api_key = str(cp_config.get("api_key") or "").strip()
+        _raw_api_key = str(cp_config.get("api_key") or "").strip()
+        # Expand ${ENV_VAR} references so keys don't get stored as literal template strings
+        # when the env var is available in the process environment.
+        api_key = os.path.expandvars(_raw_api_key) if _raw_api_key else ""
         name = str(cp_config.get("name") or "").strip()
         if api_key:
             seed.upsert(f"config:{name}", {
