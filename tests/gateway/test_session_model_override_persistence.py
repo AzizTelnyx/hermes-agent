@@ -15,6 +15,7 @@ Covers:
   - api_key is NEVER serialized to sessions.json
 """
 import json
+import time
 from unittest.mock import patch
 
 import pytest
@@ -33,6 +34,7 @@ OVERRIDE = {
     "api_key": "sk-SUPER-SECRET-do-not-persist",
     "base_url": "https://api.openai.example/v1",
     "api_mode": "responses",
+    "set_at": time.time(),
 }
 
 
@@ -83,6 +85,7 @@ def test_override_persists_and_survives_restart(store_factory, tmp_path):
         "model": "gpt-5o",
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
+        "set_at": str(OVERRIDE["set_at"]),
     }
 
 
@@ -190,7 +193,8 @@ def test_codex_override_never_runs_on_the_default_providers_endpoint(store_facto
     store = store_factory()
     session_key = store.get_or_create_session(_make_source()).session_key
     store.set_model_override(session_key, {"model": "gpt-6-luna-900k", "provider": "openai-codex",
-                                           "base_url": "https://inference-api.nousresearch.com/v1"})
+                                           "base_url": "https://inference-api.nousresearch.com/v1",
+                                           "set_at": time.time()})
     runner = _make_runner(store_factory())
     codex = {"provider": "openai-codex", "api_key": "codex-tok", "api_mode": "codex_responses",
              "base_url": "https://chatgpt.com/backend-api/codex"}
@@ -223,4 +227,5 @@ def test_sanitize_model_override():
         "model": "gpt-5o",
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
+        "set_at": str(OVERRIDE["set_at"]),
     }

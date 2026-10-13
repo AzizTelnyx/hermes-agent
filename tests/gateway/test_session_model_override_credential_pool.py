@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock
 
 from gateway.run import GatewayRunner, _credential_pool_for_provider
@@ -16,6 +17,7 @@ def test_fast_session_override_includes_credential_pool(monkeypatch):
             "api_key": "sk-test",
             "base_url": "https://hyper.charm.land/v1",
             "api_mode": "chat_completions",
+            "set_at": time.time(),
         },
     }
     fake_pool = object()
