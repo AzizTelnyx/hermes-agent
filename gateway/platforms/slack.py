@@ -329,6 +329,11 @@ class SlackAdapter(BasePlatformAdapter):
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
         self._MENTIONED_THREADS_MAX = 5000
+        # Channel-silence guard (Hugh 2026-09-08): last channel message that
+        # @mentioned the bot, per channel. send() uses it as a thread anchor
+        # when the reply plumbing drops reply_to/thread metadata for channel
+        # messages, so a reply NEVER lands as a new top-level channel message.
+        self._recent_mention_ts: Dict[str, Tuple[str, float]] = {}
         # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
         # AI Assistant lifecycle events can arrive before/alongside message
         # events, and they carry the user/thread identity needed for stable
@@ -785,6 +790,16 @@ class SlackAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            # Channel-silence guard: gateway replies to channel messages must
+            # NEVER land as new top-level messages. If the reply anchor was
+            # dropped upstream (reply_to=None, no thread metadata), fall back
+            # to the channel's last @mention ts. DMs are exempt. Covers
+            # conversational replies only — scheduled report deliveries to a
+            # channel with no recent @mention still post top-level.
+            if not thread_ts and not str(chat_id).startswith("D"):
+                _rec = self._recent_mention_ts.get(str(chat_id))
+                if _rec and (time.time() - _rec[1]) < 7200:
+                    thread_ts = _rec[0]
             last_result = None
 
             # reply_broadcast: also post thread replies to the main channel.
@@ -1961,6 +1976,8 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        if is_mentioned and not is_dm and ts:
+            self._recent_mention_ts[channel_id] = (ts, time.time())
 
         if not is_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)

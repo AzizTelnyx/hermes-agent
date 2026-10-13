@@ -146,7 +146,15 @@ class TestSchemaConversion:
 
         schema = _convert_mcp_schema("forms", mcp_tool)
 
-        assert schema["parameters"]["properties"]["input"]["$ref"] == "#/$defs/Payload"
+        # Since 2026-10-09 local refs are fully inlined (dereferenced), not
+        # just renamed: vLLM-based backends fail on any remaining local ref
+        # (see tools.schema_sanitizer.dereference_local_refs).
+        assert schema["parameters"]["properties"]["input"] == {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+        assert "$ref" not in str(schema["parameters"])
         assert "$defs" in schema["parameters"]
         assert "definitions" not in schema["parameters"]
 
@@ -183,8 +191,14 @@ class TestSchemaConversion:
 
         schema = _convert_mcp_schema("forms", mcp_tool)
 
-        assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
-        assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
+        # Refs are fully inlined (dereferenced) — chain resolves to content.
+        assert schema["parameters"]["properties"]["items"]["items"] == {
+            "type": "object",
+            "properties": {
+                "child": {"type": "object", "properties": {"value": {"type": "string"}}}
+            },
+        }
+        assert "$ref" not in str(schema["parameters"])
 
     def test_missing_type_on_object_is_coerced(self):
         """Schemas that describe an object but omit ``type`` get type='object'."""
@@ -1459,6 +1473,27 @@ class TestHTTPConfig:
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
                 with pytest.raises(ImportError, match="HTTP transport"):
                     await server._run_http(config)
+
+        asyncio.run(_test())
+
+    def test_stdio_unavailable_raises_importerror_not_nameerror(self):
+        """Regression test for #30904.
+
+        When the mcp SDK isn't installed, ``_run_stdio`` previously leaked a
+        bare ``NameError: name 'StdioServerParameters' is not defined``. The
+        gate now raises a clear ``ImportError`` with install instructions,
+        mirroring ``_run_http``'s behaviour when the HTTP transport is
+        unavailable.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("local")
+        config = {"command": "python3", "args": ["/tmp/echo.py"]}
+
+        async def _test():
+            with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+                with pytest.raises(ImportError, match=r"mcp.*SDK"):
+                    await server._run_stdio(config)
 
         asyncio.run(_test())
 

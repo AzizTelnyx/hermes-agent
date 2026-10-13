@@ -86,6 +86,18 @@ def _resolve_to_parent(db, session_id: str) -> str:
     return cur
 
 
+def _session_source(db, session_id: str) -> str:
+    """Return the platform/source ("telegram", "discord", "cli") for a session."""
+    if not session_id:
+        return ""
+    try:
+        s = db.get_session(session_id) or {}
+        return s.get("source") or ""
+    except Exception as e:
+        logging.debug("Error resolving source for %s: %s", session_id, e, exc_info=True)
+        return ""
+
+
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
     entry = {
@@ -117,6 +129,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         )  # fetch extra so we can skip current
 
         current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+        _current_source = _session_source(db, current_session_id) if current_session_id else ""
 
         results = []
         for s in sessions:
@@ -126,10 +139,12 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             # Skip child / delegation sessions
             if s.get("parent_session_id"):
                 continue
+            _src = s.get("source", "")
             results.append({
                 "session_id": sid,
                 "title": s.get("title") or None,
-                "source": s.get("source", ""),
+                "source": _src,
+                "cross_channel": bool(_current_source and _src and _src != _current_source),
                 "started_at": s.get("started_at", ""),
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
@@ -309,6 +324,7 @@ def _discover(
         }, ensure_ascii=False)
 
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+    current_source = _session_source(db, current_session_id) if current_session_id else ""
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
@@ -344,12 +360,19 @@ def _discover(
         except Exception:
             session_meta = {}
 
+        _hit_source = session_meta.get("source") or match_info.get("source", "unknown")
         entry = {
             "session_id": hit_sid,
             "when": _format_timestamp(
                 session_meta.get("started_at") or match_info.get("session_started")
             ),
-            "source": session_meta.get("source") or match_info.get("source", "unknown"),
+            "source": _hit_source,
+            "cross_channel": bool(
+                current_source
+                and _hit_source
+                and _hit_source != "unknown"
+                and _hit_source != current_source
+            ),
             "model": session_meta.get("model") or match_info.get("model") or "unknown",
             "title": session_meta.get("title") or None,
             "matched_role": match_info.get("role"),
@@ -365,14 +388,25 @@ def _discover(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    return json.dumps({
+    _cross = sum(1 for r in results if r.get("cross_channel"))
+    payload = {
         "success": True,
         "mode": "discover",
         "query": query,
+        "current_channel": current_source or "unknown",
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
-    }, ensure_ascii=False)
+    }
+    if _cross:
+        payload["message"] = (
+            f"{_cross} of {len(results)} result(s) come from a DIFFERENT channel than "
+            f"the current one ({current_source or 'unknown'}). Results flagged "
+            "cross_channel=true are separate conversations the user may not have "
+            "seen here. Do not treat them as this conversation, and say which "
+            "channel they came from before acting on them."
+        )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def session_search(

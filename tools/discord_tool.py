@@ -427,7 +427,7 @@ def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any
 def _create_thread(
     token: str, channel_id: str, name: str,
     message_id: Optional[str] = None,
-    auto_archive_duration: int = 1440,
+    auto_archive_duration: int = 10080,
     **_kwargs: Any,
 ) -> str:
     """Create a thread in a channel."""
@@ -710,7 +710,7 @@ def _build_schema(
         "auto_archive_duration": {
             "type": "integer",
             "enum": [60, 1440, 4320, 10080],
-            "description": "Thread archive duration in minutes (create_thread, default 1440).",
+            "description": "Thread archive duration in minutes (create_thread, default 10080 = 1 week).",
         },
     }
 
@@ -838,7 +838,7 @@ def _run_discord_action(
     limit: int = 50,
     before: str = "",
     after: str = "",
-    auto_archive_duration: int = 1440,
+    auto_archive_duration: int = 10080,
 ) -> str:
     """Shared handler logic for both discord tools."""
     token = _get_bot_token()
@@ -922,7 +922,7 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
-    "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "limit": 50, "before": "", "after": "", "auto_archive_duration": 10080,
 }
 
 

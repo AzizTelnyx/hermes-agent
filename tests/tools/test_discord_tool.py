@@ -458,7 +458,7 @@ class TestCreateThread:
         # Verify the API call
         mock_req.assert_called_once_with(
             "POST", "/channels/11/threads", "test-token",
-            body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11},
+            body={"name": "New Thread", "auto_archive_duration": 10080, "type": 11},
         )
 
     @patch("tools.discord_tool._discord_request")
@@ -471,7 +471,7 @@ class TestCreateThread:
         assert result["success"] is True
         mock_req.assert_called_once_with(
             "POST", "/channels/11/messages/1001/threads", "test-token",
-            body={"name": "Discussion", "auto_archive_duration": 1440},
+            body={"name": "Discussion", "auto_archive_duration": 10080},
         )
 
 
@@ -1089,9 +1089,17 @@ class Test403Enrichment:
 class TestModelToolsIntegration:
     def setup_method(self):
         _reset_capability_cache()
+        from model_tools import _clear_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
     def teardown_method(self):
         _reset_capability_cache()
+        from model_tools import _clear_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
     @patch("tools.discord_tool._discord_request")
     def test_discord_admin_schema_rebuilt_by_get_tool_definitions(
