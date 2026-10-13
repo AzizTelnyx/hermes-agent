@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import time
 from typing import Any, Optional
 
 from agent.i18n import t
@@ -251,6 +252,7 @@ class GatewayModelCommandsMixin:
             "base_url": result.base_url, "api_mode": result.api_mode,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
+            "set_at": time.time(),  # model.switch_ttl_minutes expiry (local policy: manual flips revert)
         }
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later

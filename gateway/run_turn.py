@@ -168,6 +168,29 @@ def hygiene_no_commit_reason(agent) -> str:
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
+    @staticmethod
+    def _session_model_override_expired(override: dict, user_config: Optional[dict] = None) -> bool:
+        """True when a /model override is older than ``model.switch_ttl_minutes`` (default 60).
+        Overrides without ``set_at`` are expired. ``switch_ttl_minutes: 0`` disables expiry."""
+        import time as _time
+        ttl_min = 60.0
+        try:
+            cfg = user_config
+            if cfg is None:
+                from gateway.run import _load_gateway_config
+                cfg = _load_gateway_config()
+            val = ((cfg or {}).get("model") or {}).get("switch_ttl_minutes")
+            if val is not None:
+                ttl_min = float(val)
+        except Exception:
+            pass
+        if not ttl_min or ttl_min <= 0:
+            return False
+        try:
+            return (_time.time() - float(override.get("set_at"))) > ttl_min * 60
+        except (TypeError, ValueError):
+            return True
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
@@ -191,6 +214,18 @@ class GatewayTurnMixin:
             self._rehydrate_session_model_override(skey)
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
+        if override and self._session_model_override_expired(override, user_config):
+            logger.info("Session /model override expired (switch_ttl_minutes): session=%s model=%s",
+                        skey, override.get("model"))
+            _override_state.conversation.model_override = None
+            store = getattr(self, "session_store", None)
+            if store is not None:
+                try:
+                    store.set_model_override(skey, None)
+                except Exception:
+                    logger.debug("Failed to clear expired persisted model override", exc_info=True)
+            self._evict_cached_agent(skey)
+            override = None
         if override:
             override_model = override.get("model", model)
             override_runtime = {

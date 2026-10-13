@@ -160,7 +160,7 @@ class GatewayAgentCacheMixin:
             return
         if not persisted:
             return
-        override: dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
+        override: dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url", "set_at")}
         provider = persisted.get("provider")
         from hermes_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
