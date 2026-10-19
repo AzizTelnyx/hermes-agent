@@ -930,6 +930,15 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
     """
     body = str(error_body or "").lower()
+    sent = {
+        key for msg in (sent_messages if isinstance(sent_messages, list) else ())
+        if isinstance(msg, dict) and msg.get("role") == "assistant" for key in REASONING_CARRIERS if key in msg
+    }
+    # vLLM's ChatMessage aliases ``reasoning`` onto ``reasoning_content``; a message carrying both
+    # 422s with serde's "duplicate field `reasoning_content`". The alias already carries the text,
+    # so drop only the bare ``reasoning`` key (never the canonical one).
+    if "duplicate field" in body and RC in sent and R in sent and _NAMED_FIELD_RES[RC].search(body):
+        return frozenset({R})
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
         return frozenset()
     sent = {

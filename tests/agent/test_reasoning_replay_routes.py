@@ -149,3 +149,15 @@ def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route()
                  "Extra inputs are not permitted, field: 'messages[1].reasoning_content'"):
         assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
     assert agent._reasoning_rejecting_routes == {}
+
+
+def test_vllm_duplicate_reasoning_alias_drops_bare_reasoning_only():
+    from agent.message_sanitization import rejected_reasoning_fields
+
+    body = ('Hosted_vllmException - {"errors":[{"code":"10027","detail":"Failed to deserialize the JSON body '
+            'into the target type: duplicate field `reasoning_content` at line 1 column 137833"}]}')
+    sent = [{"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "x", "reasoning_content": "t", "reasoning": "t"}]
+    assert rejected_reasoning_fields(body, sent) == frozenset({"reasoning"})
+    # Only one carrier sent -> not this failure mode; nothing to drop.
+    assert rejected_reasoning_fields(body, [{"role": "assistant", "content": "x", "reasoning_content": "t"}]) == frozenset()
